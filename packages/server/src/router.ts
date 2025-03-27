@@ -4,7 +4,6 @@ import { ConsoleLogger, LogLevel, type Logger } from './logger.js';
 import {
   type BlobResourceContents,
   CallToolRequestSchema,
-  type CallToolResult,
   CallToolResultSchema,
   GetPromptRequestSchema,
   GetPromptResultSchema,
@@ -34,6 +33,7 @@ import {
 import { initTRPC } from '@trpc/server';
 import { ZodError, type z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import type { CallToolResult } from './types.js';
 
 export type ToolHandler<T> = (args: T) => Promise<CallToolResult>;
 export type ResourceHandler = () => Promise<Resource[]>;
@@ -210,12 +210,22 @@ export class MCPRouter {
 
     const tools = Array.from(this.tools.entries()).map(
       ([name, { definition }]) => {
-        // Properly extract JSON schema without wrapping it in properties
-        const jsonSchema = zodToJsonSchema(definition.schema);
+        // Generate JSON schema and ensure it matches expected format
+        const rawSchema = zodToJsonSchema(definition.schema);
+        
+        // Ensure the schema has the required structure
+        const inputSchema = {
+          type: 'object',
+          properties: rawSchema.properties || {},
+          ...(rawSchema.required ? { required: rawSchema.required } : {}),
+          ...(rawSchema.additionalProperties !== undefined ? 
+            { additionalProperties: rawSchema.additionalProperties } : {}),
+        };
+        
         return {
           name,
           description: definition.description,
-          inputSchema: jsonSchema,
+          inputSchema,
         } satisfies Tool;
       },
     );
@@ -278,14 +288,14 @@ export class MCPRouter {
         return [
           toolResult.content || [],
           toolResult.artifact || null
-        ];
+        ] as CallToolResult;
       }
       
       // If result is in tuple format but object format is expected, convert
       if (Array.isArray(toolResult)) {
         return {
           content: toolResult[0] || [],
-          artifact: toolResult[1] || null
+          ...(toolResult[1] !== null && { artifact: toolResult[1] })
         };
       }
       
