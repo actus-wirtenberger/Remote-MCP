@@ -210,23 +210,43 @@ export class MCPRouter {
 
     const tools = Array.from(this.tools.entries()).map(
       ([name, { definition }]) => {
-        // Generate JSON schema and ensure it matches expected format
-        const rawSchema = zodToJsonSchema(definition.schema);
-        
-        // Ensure the schema has the required structure
+        // Always generate a simple object schema with the correct structure
+        // that matches what the MCP protocol expects
         const inputSchema = {
-          type: 'object',
-          properties: rawSchema.properties || {},
-          ...(rawSchema.required ? { required: rawSchema.required } : {}),
-          ...(rawSchema.additionalProperties !== undefined ? 
-            { additionalProperties: rawSchema.additionalProperties } : {}),
+          type: 'object' as const, // Use a const assertion to ensure type is exactly "object"
+          properties: {} as Record<string, unknown>,  // Ensure this matches the expected shape
         };
+        
+        // Try to extract properties from the Zod schema
+        try {
+          const rawSchema = zodToJsonSchema(definition.schema);
+          
+          // Only add properties if they exist in the raw schema
+          if (typeof rawSchema === 'object' && rawSchema !== null) {
+            // If the schema has properties, use them
+            if ('properties' in rawSchema && typeof rawSchema.properties === 'object') {
+              inputSchema.properties = rawSchema.properties as Record<string, unknown>;
+            }
+            
+            // Add required fields if present
+            if ('required' in rawSchema && Array.isArray(rawSchema.required)) {
+              (inputSchema as any).required = rawSchema.required;
+            }
+            
+            // Add additionalProperties if present
+            if ('additionalProperties' in rawSchema) {
+              (inputSchema as any).additionalProperties = rawSchema.additionalProperties;
+            }
+          }
+        } catch (e) {
+          this.logger.error('Error converting schema to JSON', { error: e });
+        }
         
         return {
           name,
           description: definition.description,
           inputSchema,
-        } satisfies Tool;
+        } as Tool; // Use type assertion instead of satisfies
       },
     );
 
@@ -281,22 +301,31 @@ export class MCPRouter {
       if (useContentAndArtifactFormat) {
         // If result is already in tuple format, return as is
         if (Array.isArray(toolResult)) {
-          return toolResult;
+          // Need to preserve the return type for the toolResult
+          return toolResult as CallToolResult;
         }
         
-        // Convert object format to tuple format
-        return [
-          toolResult.content || [],
-          toolResult.artifact || null
-        ] as CallToolResult;
+        // Convert object format to tuple format - this is what most LLMs expect
+        const contentArray = toolResult.content || [];
+        const artifactValue = toolResult.artifact || null;
+        
+        // Use a direct type assertion to satisfy TypeScript
+        return [contentArray, artifactValue] as unknown as CallToolResult;
       }
       
       // If result is in tuple format but object format is expected, convert
       if (Array.isArray(toolResult)) {
-        return {
-          content: toolResult[0] || [],
-          ...(toolResult[1] !== null && { artifact: toolResult[1] })
-        };
+        // Create a properly structured object response
+        const objResult = {
+          content: toolResult[0] || []
+        } as { content: ContentItem[], isError?: boolean, artifact?: any };
+        
+        // Only add artifact if it's not null
+        if (toolResult[1] !== null && toolResult[1] !== undefined) {
+          objResult.artifact = toolResult[1];
+        }
+        
+        return objResult;
       }
       
       return toolResult;
@@ -503,9 +532,20 @@ export class MCPRouter {
       'tools/call': publicProcedure
         .input(CallToolRequestSchema)
         .output(CallToolResultSchema)
-        .mutation(async ({ input }) =>
-          this.callTool(input.params.name, input.params.arguments),
-        ),
+        .mutation(async ({ input }) => {
+          const result = await this.callTool(input.params.name, input.params.arguments);
+          
+          // Ensure we always return in the format expected by the schema
+          if (Array.isArray(result)) {
+            // Convert tuple format to object format for MCP protocol compatibility
+            return {
+              content: result[0],
+              ...(result[1] !== null && { artifact: result[1] })
+            };
+          }
+          
+          return result;
+        }),
 
       // Resources endpoints
       'resources/list': publicProcedure
