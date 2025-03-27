@@ -206,21 +206,16 @@ export class MCPRouter {
   }
 
   async listTools(): Promise<Tool[]> {
-    this.logger.debug('Listing resources');
+    this.logger.debug('Listing tools');
 
     const tools = Array.from(this.tools.entries()).map(
       ([name, { definition }]) => {
-        const schema = {
-          ...zodToJsonSchema(definition.schema),
-          $schema: undefined,
-        };
+        // Properly extract JSON schema without wrapping it in properties
+        const jsonSchema = zodToJsonSchema(definition.schema);
         return {
           name,
           description: definition.description,
-          inputSchema: {
-            type: 'object',
-            properties: schema,
-          },
+          inputSchema: jsonSchema,
         } satisfies Tool;
       },
     );
@@ -238,17 +233,67 @@ export class MCPRouter {
 
     const { definition, handler } = tool;
 
-    const validatedArgs = definition.schema.parse(args);
-    this.logger.debug('Tool args validated', { validatedArgs });
+    // Check if args has a format field or special format indicators
+    const formatOptions = args && typeof args === 'object' && args !== null
+      ? (args as Record<string, any>)
+      : {};
+    
+    // Check if content_and_artifact format is requested
+    const useContentAndArtifactFormat = 
+      formatOptions.format === 'content_and_artifact' || 
+      formatOptions._format === 'content_and_artifact';
 
-    let result = validatedArgs;
-    if (definition.middlewares) {
-      for (const middleware of definition.middlewares) {
-        result = await middleware(result, async (modified) => modified);
-      }
+    // Strip format indicators before passing to validator
+    let processedArgs = args;
+    if (typeof processedArgs === 'object' && processedArgs !== null) {
+      const cleanedArgs = { ...processedArgs as Record<string, any> };
+      delete cleanedArgs.format;
+      delete cleanedArgs._format;
+      processedArgs = cleanedArgs;
     }
 
-    return handler(result);
+    // Validate and process arguments
+    try {
+      const validatedArgs = definition.schema.parse(processedArgs);
+      this.logger.debug('Tool args validated', { validatedArgs });
+      
+      let result = validatedArgs;
+      if (definition.middlewares) {
+        for (const middleware of definition.middlewares) {
+          result = await middleware(result, async (modified) => modified);
+        }
+      }
+
+      // Execute tool handler with processed args
+      const toolResult = await handler(result);
+      
+      // Convert to requested format if needed
+      if (useContentAndArtifactFormat) {
+        // If result is already in tuple format, return as is
+        if (Array.isArray(toolResult)) {
+          return toolResult;
+        }
+        
+        // Convert object format to tuple format
+        return [
+          toolResult.content || [],
+          toolResult.artifact || null
+        ];
+      }
+      
+      // If result is in tuple format but object format is expected, convert
+      if (Array.isArray(toolResult)) {
+        return {
+          content: toolResult[0] || [],
+          artifact: toolResult[1] || null
+        };
+      }
+      
+      return toolResult;
+    } catch (error) {
+      this.logger.error('Tool execution error', { error });
+      throw error;
+    }
   }
 
   addResource(uri: string, definition: ResourceDefinition) {

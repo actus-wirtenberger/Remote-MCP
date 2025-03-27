@@ -5,4 +5,4 @@ export {
   type Logger,
   ConsoleLogger,
 } from './logger.js';
-export type { AppRouter, RouterInputs, RouterOutputs } from './types.js';
+export type { AppRouter, RouterInputs, RouterOutputs, CallToolResult } from './types.js';
