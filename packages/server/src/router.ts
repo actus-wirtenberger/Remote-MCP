@@ -33,7 +33,7 @@ import {
 import { initTRPC } from '@trpc/server';
 import { ZodError, type z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { CallToolResult } from './types.js';
+import type { CallToolResult, ContentItem } from './types.js';
 
 export type ToolHandler<T> = (args: T) => Promise<CallToolResult>;
 export type ResourceHandler = () => Promise<Resource[]>;
@@ -535,16 +535,17 @@ export class MCPRouter {
         .mutation(async ({ input }) => {
           const result = await this.callTool(input.params.name, input.params.arguments);
           
-          // Ensure we always return in the format expected by the schema
-          if (Array.isArray(result)) {
-            // Convert tuple format to object format for MCP protocol compatibility
-            return {
-              content: result[0],
-              ...(result[1] !== null && { artifact: result[1] })
-            };
-          }
+          // We need to cast the result to match the exact shape expected by CallToolResultSchema
+          // This ensures that TypeScript recognizes the type compatibility
           
-          return result;
+          // First convert to object format if needed
+          const objectResult = Array.isArray(result) 
+            ? { content: result[0], ...(result[1] !== null && { artifact: result[1] }) }
+            : result;
+          
+          // Then use type assertion to satisfy the schema's expected shape
+          // We're not changing the data, just helping TypeScript understand the type
+          return objectResult as any;
         }),
 
       // Resources endpoints
